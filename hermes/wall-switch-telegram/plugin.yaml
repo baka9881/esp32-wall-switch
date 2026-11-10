@@ -1,0 +1,5 @@
+name: wall-switch-telegram
+version: "1.1.0"
+description: Control the local ESP32 wall switch from an allowlisted Telegram private chat.
+provides_hooks:
+  - pre_gateway_dispatch

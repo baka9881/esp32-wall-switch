@@ -1,0 +1,10 @@
+.env
+.env.*
+settings.json
+device-credential.txt
+ESP32-首次連線.txt
+__pycache__/
+*.pyc
+*.bin
+*.elf
+build/
