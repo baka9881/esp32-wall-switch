@@ -7,9 +7,9 @@
 
 constexpr uint8_t ServoPin = 4;
 constexpr uint8_t PwmBits = 14;
-constexpr uint16_t OnPulseUs = 1100;
+constexpr uint16_t OnPulseUs = 1233;
 constexpr uint16_t CenterPulseUs = 1500;
-constexpr uint16_t OffPulseUs = 1900;
+constexpr uint16_t OffPulseUs = 1767;
 constexpr uint32_t JoinTimeoutMs = 15000;
 constexpr uint32_t SetupGraceMs = 90000;
 constexpr uint32_t SetupPrintIntervalMs = 5000;
@@ -410,6 +410,8 @@ void setup() {
   Serial.begin(115200);
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  // Keep the radio awake so Hermes requests are answered right away.
+  WiFi.setSleep(false);
   WiFi.setAutoReconnect(false);
   const uint64_t mac = ESP.getEfuseMac();
   const auto idHigh = static_cast<unsigned int>(mac >> 32) & 0xffff;

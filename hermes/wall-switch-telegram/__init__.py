@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 from threading import Lock
+import time
 
 from dotenv import dotenv_values
 from gateway.platforms.event import MessageType
@@ -53,6 +54,8 @@ _GET_RETRYABLE = (
     requests.Timeout,
     requests.exceptions.ChunkedEncodingError,
 )
+_GET_ATTEMPTS = 4
+_GET_RETRY_DELAY = 1.0
 _CONTROL_LOCK = Lock()
 _DENIED = "請用已授權的 Telegram 帳號，在和機器人的私人聊天操作。"
 
@@ -97,18 +100,21 @@ def _switch_request(action, settings):
     if not password:
         raise ValueError("Missing device credential")
     url = f"http://{address}"
-    timeout = (2, 5)
+    timeout = (3, 5)
 
     with _CONTROL_LOCK, requests.Session() as session:
         session.trust_env = False
         session.auth = HTTPDigestAuth("light", password.group(1))
-        for attempt in range(2):
+        # Only the read-only GET is retried. ESP32 Wi-Fi can drop for a few seconds
+        # while it rejoins the router, so keep trying for about 15 seconds.
+        for attempt in range(_GET_ATTEMPTS):
             try:
                 page = session.get(f"{url}/", timeout=timeout, allow_redirects=False)
                 break
             except requests.RequestException as error:
-                if attempt == 1 or not isinstance(error, _GET_RETRYABLE):
-                    return "目前連不到 ESP32 控制頁。請確認 ESP32 已連上家裡的 Wi‑Fi。"
+                if attempt == _GET_ATTEMPTS - 1 or not isinstance(error, _GET_RETRYABLE):
+                    return "目前連不到 ESP32 控制頁（重試約 15 秒仍失敗）。請確認 ESP32 有電、已連上家裡的 Wi‑Fi。"
+                time.sleep(_GET_RETRY_DELAY)
         if page.status_code == 401:
             return "ESP32 拒絕登入。請確認電燈控制頁的設定密碼。"
         nonce = _NONCE.search(page.content)
