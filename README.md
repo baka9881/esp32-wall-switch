@@ -43,4 +43,10 @@ ESP32 由 `5V` 排針供電時，板子的 USB‑C 留空。要用電腦 USB 上
 
 「狀態」查的是控制頁能否連線。ESP32 可以回報舵機指令已完成，燈泡實際亮熄要以現場看到的為準。使用 Telegram 時，執行 Hermes Gateway 的電腦與 ESP32 都要保持上線。
 
+## 連線穩定性與自動檢查
+
+- 韌體用 `WiFi.setSleep(false)` 關掉 Wi‑Fi 省電，避免 ESP32 偶爾來不及回應。改韌體時不要拿掉。
+- Hermes 外掛連不到 ESP32 時，會在約 15 秒內重試查詢控制頁；送出開關燈的指令只送一次，不會重送，避免舵機連按兩次。
+- 修改後執行 `python -m pytest tests`（需要 `pytest`、`requests`），確認上述兩點和目前舵機行程沒有被改掉。
+
 裝置密碼、Telegram Token 和實際設定留在本機。對外分享時使用 repo 裡的空白範本。
