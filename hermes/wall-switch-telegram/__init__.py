@@ -2,6 +2,8 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 from threading import Lock
 import time
 
@@ -49,6 +51,15 @@ _PRIVATE_NETWORKS = tuple(
 _SETTINGS = Path(__file__).with_name("settings.json")
 _NONCE = re.compile(rb"name='nonce' value='([0-9a-f]{32})'")
 _PASSWORD = re.compile(r"^設定密碼　([0-9a-f]{24})$", re.MULTILINE)
+_HEALTH = re.compile(rb"data-uptime='(\d+)' data-reset='([a-z]+)' data-rejoins='(\d+)'")
+_RESET_REASONS = {
+    "power": "通電啟動",
+    "brownout": "電壓不足",
+    "restart": "斷線自動重開",
+    "crash": "程式當機",
+    "watchdog": "程式卡住被重開",
+    "button": "按了重置鍵",
+}
 _GET_RETRYABLE = (
     requests.ConnectionError,
     requests.Timeout,
@@ -113,7 +124,7 @@ def _switch_request(action, settings):
                 break
             except requests.RequestException as error:
                 if attempt == _GET_ATTEMPTS - 1 or not isinstance(error, _GET_RETRYABLE):
-                    return "目前連不到 ESP32 控制頁（重試約 15 秒仍失敗）。請確認 ESP32 有電、已連上家裡的 Wi‑Fi。"
+                    return _unreachable_reply(address)
                 time.sleep(_GET_RETRY_DELAY)
         if page.status_code == 401:
             return "ESP32 拒絕登入。請確認電燈控制頁的設定密碼。"
@@ -122,7 +133,7 @@ def _switch_request(action, settings):
         if page.status_code != 200 or not nonce or not all(marker in page.content for marker in controls):
             return f"ESP32 未提供電燈控制頁（HTTP {page.status_code}）。"
         if action == "status":
-            return "ESP32 控制頁可以連線。裝置沒有燈況感測器。"
+            return "ESP32 控制頁可以連線。" + _health_text(page.content) + "裝置沒有燈況感測器。"
 
         request = session.prepare_request(requests.Request(
             "POST", f"{url}/move", data={"side": action, "nonce": nonce.group(1).decode("ascii")}
@@ -139,6 +150,40 @@ def _switch_request(action, settings):
             return f"ESP32 未確認完成指令（HTTP {result.status_code}）。"
     label = {"on": "開燈", "off": "關燈"}[action]
     return f"ESP32 已完成{label}的舵機指令。裝置沒有燈況感測器。"
+
+
+def _router_reachable(address):
+    """True if this computer can reach the home router (x.x.x.1 of the ESP32's /24)."""
+    # Ping, not TCP: many home routers silently drop port 80 from the LAN.
+    router = str(ipaddress.IPv4Address((int(address) & 0xFFFFFF00) | 1))
+    command = ["ping", "-n", "1", "-w", "1500", router] if sys.platform == "win32"         else ["ping", "-c", "1", "-W", "2", router]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=5,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot tell; fall back to the ESP32-side hint
+    # "TTL=" appears only in a real echo reply, not in "Destination host unreachable".
+    return b"TTL=" in result.stdout.upper()
+
+
+def _unreachable_reply(address):
+    # 2026-11-13: Proton VPN blocked the whole home network on this computer,
+    # which looked exactly like the ESP32 being offline.
+    if not _router_reachable(address):
+        return ("連不到 ESP32，而且這台電腦連家裡路由器也連不到，問題在電腦這邊，不是 ESP32。"
+                "最常見是 VPN（例如 Proton VPN）擋住區域網路，請先把 VPN 斷線再試。")
+    return ("目前連不到 ESP32 控制頁（重試約 15 秒仍失敗），但電腦連得到路由器。"
+            "ESP32 斷線超過 2 分鐘會自己重開，請約 3 分鐘後再試；仍不行請確認 ESP32 有電。")
+
+
+def _health_text(content):
+    match = _HEALTH.search(content)
+    if not match:
+        return ""
+    minutes = int(match.group(1)) // 60
+    uptime = f"{minutes // 60} 小時 {minutes % 60} 分" if minutes >= 60 else f"{minutes} 分鐘"
+    reason = _RESET_REASONS.get(match.group(2).decode("ascii"), "其他")
+    return f"已連續運作 {uptime}，上次啟動原因：{reason}，Wi‑Fi 重連 {int(match.group(3))} 次。"
 
 
 def _is_telegram_private_sender(source):
