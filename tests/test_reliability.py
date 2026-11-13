@@ -127,3 +127,54 @@ def test_motion_post_is_never_retried(plugin, monkeypatch):
     reply = mod["_switch_request"]("on", settings)
     assert "未收到確認" in reply
     assert calls["post"] == 1
+
+
+# --- Self-recovery (2026-11-13 outage: ESP32 dropped off Wi-Fi and stayed off) --
+
+def _function_body(source, name):
+    start = source.index(name)
+    return source[start:source.index("\n}\n", start)]
+
+
+def test_firmware_restarts_when_wifi_stays_down():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    limit = int(re.search(r"OfflineRestartMs = (\d+);", source).group(1))
+    assert 60_000 <= limit <= 180_000  # Telegram hint promises recovery within ~3 minutes.
+    watch = _function_body(source, "void watchConnection()")
+    assert "ESP.restart()" in watch
+    assert "!apActive" in watch  # never reboot while the setup hotspot is in use
+    assert "watchConnection();" in _function_body(source, "void loop()")
+
+
+def test_firmware_loop_watchdog_is_fed():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    assert "esp_task_wdt_add(nullptr);" in _function_body(source, "void setup()")
+    assert "esp_task_wdt_reset();" in _function_body(source, "void loop()")
+    timeout = int(re.search(r"LoopWatchdogMs = (\d+);", source).group(1))
+    assert timeout >= 15_000  # above the 5 s HTTP read plus the 0.75 s servo move
+
+
+def test_firmware_health_markup_matches_plugin(plugin):
+    """The firmware's health line must stay parseable by the plugin."""
+    mod, _ = plugin
+    source = FIRMWARE.read_text(encoding="utf-8")
+    template = re.search(r'"(<p class=\'health\'[^"]+)"', source).group(1)
+    sample = template.replace("%lu", "7380", 1).replace("%s", "brownout").replace("%lu", "2")
+    text = mod["_health_text"](sample.encode())
+    assert text == "已連續運作 2 小時 3 分，上次啟動原因：電壓不足，Wi‑Fi 重連 2 次。"
+    for reason in re.findall(r'return "([a-z]+)";', _function_body(source, "const char *resetReasonName()")):
+        assert reason == "other" or reason in mod["_RESET_REASONS"]
+
+
+def test_status_reports_health(plugin, monkeypatch):
+    mod, settings = plugin
+    page = PAGE + b"<p class='health' data-uptime='300' data-reset='restart' data-rejoins='0'></p>"
+    _fake_session(monkeypatch, [FakeResponse(200, page)], [])
+    reply = mod["_switch_request"]("status", settings)
+    assert "已連續運作 5 分鐘" in reply and "斷線自動重開" in reply
+
+
+def test_unreachable_reply_mentions_self_restart(plugin, monkeypatch):
+    mod, settings = plugin
+    _fake_session(monkeypatch, [requests.ConnectionError("offline")] * 10, [])
+    assert "自己重開" in mod["_switch_request"]("status", settings)

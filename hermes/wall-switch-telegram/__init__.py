@@ -49,6 +49,15 @@ _PRIVATE_NETWORKS = tuple(
 _SETTINGS = Path(__file__).with_name("settings.json")
 _NONCE = re.compile(rb"name='nonce' value='([0-9a-f]{32})'")
 _PASSWORD = re.compile(r"^設定密碼　([0-9a-f]{24})$", re.MULTILINE)
+_HEALTH = re.compile(rb"data-uptime='(\d+)' data-reset='([a-z]+)' data-rejoins='(\d+)'")
+_RESET_REASONS = {
+    "power": "通電啟動",
+    "brownout": "電壓不足",
+    "restart": "斷線自動重開",
+    "crash": "程式當機",
+    "watchdog": "程式卡住被重開",
+    "button": "按了重置鍵",
+}
 _GET_RETRYABLE = (
     requests.ConnectionError,
     requests.Timeout,
@@ -113,7 +122,9 @@ def _switch_request(action, settings):
                 break
             except requests.RequestException as error:
                 if attempt == _GET_ATTEMPTS - 1 or not isinstance(error, _GET_RETRYABLE):
-                    return "目前連不到 ESP32 控制頁（重試約 15 秒仍失敗）。請確認 ESP32 有電、已連上家裡的 Wi‑Fi。"
+                    return ("目前連不到 ESP32 控制頁（重試約 15 秒仍失敗）。"
+                            "ESP32 斷線超過 2 分鐘會自己重開，請約 3 分鐘後再試；"
+                            "仍不行請確認 ESP32 有電。")
                 time.sleep(_GET_RETRY_DELAY)
         if page.status_code == 401:
             return "ESP32 拒絕登入。請確認電燈控制頁的設定密碼。"
@@ -122,7 +133,7 @@ def _switch_request(action, settings):
         if page.status_code != 200 or not nonce or not all(marker in page.content for marker in controls):
             return f"ESP32 未提供電燈控制頁（HTTP {page.status_code}）。"
         if action == "status":
-            return "ESP32 控制頁可以連線。裝置沒有燈況感測器。"
+            return "ESP32 控制頁可以連線。" + _health_text(page.content) + "裝置沒有燈況感測器。"
 
         request = session.prepare_request(requests.Request(
             "POST", f"{url}/move", data={"side": action, "nonce": nonce.group(1).decode("ascii")}
@@ -139,6 +150,16 @@ def _switch_request(action, settings):
             return f"ESP32 未確認完成指令（HTTP {result.status_code}）。"
     label = {"on": "開燈", "off": "關燈"}[action]
     return f"ESP32 已完成{label}的舵機指令。裝置沒有燈況感測器。"
+
+
+def _health_text(content):
+    match = _HEALTH.search(content)
+    if not match:
+        return ""
+    minutes = int(match.group(1)) // 60
+    uptime = f"{minutes // 60} 小時 {minutes % 60} 分" if minutes >= 60 else f"{minutes} 分鐘"
+    reason = _RESET_REASONS.get(match.group(2).decode("ascii"), "其他")
+    return f"已連續運作 {uptime}，上次啟動原因：{reason}，Wi‑Fi 重連 {int(match.group(3))} 次。"
 
 
 def _is_telegram_private_sender(source):

@@ -4,6 +4,8 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_random.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 
 constexpr uint8_t ServoPin = 4;
 constexpr uint8_t PwmBits = 14;
@@ -13,6 +15,10 @@ constexpr uint16_t OffPulseUs = 1767;
 constexpr uint32_t JoinTimeoutMs = 15000;
 constexpr uint32_t SetupGraceMs = 90000;
 constexpr uint32_t SetupPrintIntervalMs = 5000;
+// Restart if saved Wi-Fi stays unreachable this long; a reboot clears a stuck radio.
+constexpr uint32_t OfflineRestartMs = 120000;
+// Restart if loop() stops running this long (longest normal wait is the 5 s HTTP read).
+constexpr uint32_t LoopWatchdogMs = 30000;
 constexpr char StorageNamespace[] = "wall-switch";
 constexpr char SetupKeyEntry[] = "setup-key";
 constexpr char WifiEntry[] = "wifi-v1";
@@ -41,6 +47,8 @@ bool mdnsActive;
 bool servoReady;
 bool storageReady;
 const char *setupMessage = "";
+uint32_t offlineSince;
+uint32_t rejoinCount;
 
 void sendPage(int status, const String &content, bool refresh = false);
 void showSetup(int status = 200);
@@ -173,6 +181,8 @@ void updateNetwork() {
           MDNS.end();
           mdnsActive = false;
         }
+        rejoinCount++;
+        WiFi.disconnect();
         joinWifi();
       } else if (networkState == NetworkState::Joined && millis() - stateSince >= SetupGraceMs) {
         if (WiFi.mode(WIFI_STA)) {
@@ -183,6 +193,34 @@ void updateNetwork() {
         }
       }
       break;
+  }
+}
+
+void watchConnection() {
+  // Only with saved Wi-Fi: never restart while someone is using the setup hotspot.
+  const bool offline = !apActive && networkState != NetworkState::Setup && !stationReady();
+  if (!offline) {
+    offlineSince = 0;
+  } else if (!offlineSince) {
+    offlineSince = millis() | 1;
+  } else if (millis() - offlineSince >= OfflineRestartMs) {
+    Serial.println("RESTART=WIFI_OFFLINE");
+    delay(100);
+    ESP.restart();
+  }
+}
+
+const char *resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SW: return "restart";
+    case ESP_RST_PANIC: return "crash";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_EXT: return "button";
+    default: return "other";
   }
 }
 
@@ -307,6 +345,10 @@ void showControls(const char *message) {
   String content = String(F("<p>")) + message +
                    F("</p><p>開燈和關燈會按下實體開關的指定側。此裝置沒有燈況感測器。</p>"
                      "<form method='post' action='/move'>");
+  char health[112];
+  snprintf(health, sizeof(health), "<p class='health' data-uptime='%lu' data-reset='%s' data-rejoins='%lu'></p>",
+           static_cast<unsigned long>(millis() / 1000), resetReasonName(), static_cast<unsigned long>(rejoinCount));
+  content = health + content;
   content += nonceField(controlNonce);
   content += F("<button name='side' value='on'>開燈</button>"
                "<button name='side' value='off'>關燈</button>"
@@ -408,6 +450,10 @@ void setup() {
   digitalWrite(ServoPin, LOW);
   servoReady = ledcAttach(ServoPin, 50, PwmBits) && ledcWrite(ServoPin, 0);
   Serial.begin(115200);
+  const esp_task_wdt_config_t watchdog = {LoopWatchdogMs, 0, true};
+  esp_task_wdt_reconfigure(&watchdog);
+  esp_task_wdt_add(nullptr);
+  Serial.printf("RESET_REASON=%s\n", resetReasonName());
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   // Keep the radio awake so Hermes requests are answered right away.
@@ -438,9 +484,11 @@ void setup() {
 }
 
 void loop() {
+  esp_task_wdt_reset();
   if (storageReady) {
     handleSerial();
     updateNetwork();
+    watchConnection();
     server.handleClient();
     if (apActive && millis() - lastSetupPrint >= SetupPrintIntervalMs) {
       printSetupInfo();
