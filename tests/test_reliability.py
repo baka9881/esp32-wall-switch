@@ -174,7 +174,31 @@ def test_status_reports_health(plugin, monkeypatch):
     assert "已連續運作 5 分鐘" in reply and "斷線自動重開" in reply
 
 
-def test_unreachable_reply_mentions_self_restart(plugin, monkeypatch):
+def _fake_ping(monkeypatch, mod, stdout):
+    calls = []
+
+    def run(command, **kw):
+        calls.append(command)
+        return types.SimpleNamespace(stdout=stdout, returncode=0)
+
+    monkeypatch.setattr(mod["subprocess"], "run", run)
+    return calls
+
+
+def test_unreachable_esp32_but_router_ok_mentions_self_restart(plugin, monkeypatch):
     mod, settings = plugin
     _fake_session(monkeypatch, [requests.ConnectionError("offline")] * 10, [])
-    assert "自己重開" in mod["_switch_request"]("status", settings)
+    pings = _fake_ping(monkeypatch, mod, b"Reply from 192.168.1.1: bytes=32 time=3ms TTL=64")
+    reply = mod["_switch_request"]("status", settings)
+    assert "自己重開" in reply and "VPN" not in reply
+    assert pings[0][-1] == "192.168.1.1"
+
+
+def test_unreachable_router_blames_this_computer(plugin, monkeypatch):
+    """2026-11-13: Proton VPN blocked the LAN; the reply must say so, not blame the ESP32."""
+    mod, settings = plugin
+    _fake_session(monkeypatch, [requests.ConnectionError("offline")] * 10, [])
+    # Windows prints "unreachable" replies without TTL; that must count as no route.
+    _fake_ping(monkeypatch, mod, b"Reply from 192.168.1.102: Destination host unreachable.")
+    reply = mod["_switch_request"]("status", settings)
+    assert "電腦" in reply and "VPN" in reply

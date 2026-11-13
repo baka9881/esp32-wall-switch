@@ -2,6 +2,8 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 from threading import Lock
 import time
 
@@ -122,9 +124,7 @@ def _switch_request(action, settings):
                 break
             except requests.RequestException as error:
                 if attempt == _GET_ATTEMPTS - 1 or not isinstance(error, _GET_RETRYABLE):
-                    return ("目前連不到 ESP32 控制頁（重試約 15 秒仍失敗）。"
-                            "ESP32 斷線超過 2 分鐘會自己重開，請約 3 分鐘後再試；"
-                            "仍不行請確認 ESP32 有電。")
+                    return _unreachable_reply(address)
                 time.sleep(_GET_RETRY_DELAY)
         if page.status_code == 401:
             return "ESP32 拒絕登入。請確認電燈控制頁的設定密碼。"
@@ -150,6 +150,30 @@ def _switch_request(action, settings):
             return f"ESP32 未確認完成指令（HTTP {result.status_code}）。"
     label = {"on": "開燈", "off": "關燈"}[action]
     return f"ESP32 已完成{label}的舵機指令。裝置沒有燈況感測器。"
+
+
+def _router_reachable(address):
+    """True if this computer can reach the home router (x.x.x.1 of the ESP32's /24)."""
+    # Ping, not TCP: many home routers silently drop port 80 from the LAN.
+    router = str(ipaddress.IPv4Address((int(address) & 0xFFFFFF00) | 1))
+    command = ["ping", "-n", "1", "-w", "1500", router] if sys.platform == "win32"         else ["ping", "-c", "1", "-W", "2", router]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=5,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return True  # cannot tell; fall back to the ESP32-side hint
+    # "TTL=" appears only in a real echo reply, not in "Destination host unreachable".
+    return b"TTL=" in result.stdout.upper()
+
+
+def _unreachable_reply(address):
+    # 2026-11-13: Proton VPN blocked the whole home network on this computer,
+    # which looked exactly like the ESP32 being offline.
+    if not _router_reachable(address):
+        return ("連不到 ESP32，而且這台電腦連家裡路由器也連不到，問題在電腦這邊，不是 ESP32。"
+                "最常見是 VPN（例如 Proton VPN）擋住區域網路，請先把 VPN 斷線再試。")
+    return ("目前連不到 ESP32 控制頁（重試約 15 秒仍失敗），但電腦連得到路由器。"
+            "ESP32 斷線超過 2 分鐘會自己重開，請約 3 分鐘後再試；仍不行請確認 ESP32 有電。")
 
 
 def _health_text(content):
