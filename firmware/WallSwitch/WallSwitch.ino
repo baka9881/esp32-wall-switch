@@ -9,7 +9,7 @@
 
 constexpr uint8_t ServoPin = 4;
 constexpr uint8_t PwmBits = 14;
-constexpr uint16_t OnPulseUs = 1233;
+constexpr uint16_t OnPulseUs = 1180;
 constexpr uint16_t CenterPulseUs = 1500;
 constexpr uint16_t OffPulseUs = 1767;
 constexpr uint32_t JoinTimeoutMs = 15000;

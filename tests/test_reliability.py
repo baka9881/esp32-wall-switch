@@ -43,10 +43,10 @@ def test_firmware_keeps_wifi_awake():
 
 
 def test_firmware_servo_travel_matches_flashed_build():
-    """2026-11-12 flash readback matched the 2026-11-10 build with these values.
+    """2026-11-13: light-on at 1233 µs did not reach the switch, raised to 1180 µs.
     Change only after re-testing on the wall."""
     source = FIRMWARE.read_text(encoding="utf-8")
-    assert "OnPulseUs = 1233;" in source
+    assert "OnPulseUs = 1180;" in source
     assert "OffPulseUs = 1767;" in source
 
 
