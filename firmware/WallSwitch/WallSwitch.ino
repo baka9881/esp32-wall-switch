@@ -356,6 +356,16 @@ void showControls(const char *message) {
   sendPage(200, content);
 }
 
+// Plain-text nonce for iPhone Shortcuts: Shortcuts turns the HTML page into
+// rich text and drops the hidden nonce field, so it cannot read it from "/".
+void handleNonce() {
+  if (!allowControl()) {
+    return;
+  }
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/plain", controlNonce);
+}
+
 uint32_t pulseDuty(uint16_t micros) {
   return (uint32_t(micros) * (1UL << PwmBits) + 10000) / 20000;
 }
@@ -479,6 +489,7 @@ void setup() {
   server.on("/", HTTP_GET, handleHome);
   server.on("/join", HTTP_POST, handleJoin);
   server.on("/move", HTTP_POST, handleMove);
+  server.on("/nonce", HTTP_GET, handleNonce);
   server.onNotFound([] { sendPage(404, F("<p>請手動開啟裝置網址。</p>")); });
   server.begin();
 }

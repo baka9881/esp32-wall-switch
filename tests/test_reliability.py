@@ -154,6 +154,15 @@ def test_firmware_loop_watchdog_is_fed():
     assert timeout >= 15_000  # above the 5 s HTTP read plus the 0.75 s servo move
 
 
+def test_firmware_serves_plain_nonce_for_shortcuts():
+    """iPhone Shortcuts cannot read the hidden nonce from the HTML page (2026-11-14)."""
+    source = FIRMWARE.read_text(encoding="utf-8")
+    assert 'server.on("/nonce", HTTP_GET, handleNonce);' in _function_body(source, "void setup()")
+    body = _function_body(source, "void handleNonce()")
+    assert body.index("allowControl()") < body.index("server.send(")  # same LAN + password check first
+    assert '"text/plain", controlNonce' in body
+
+
 def test_firmware_health_markup_matches_plugin(plugin):
     """The firmware's health line must stay parseable by the plugin."""
     mod, _ = plugin
